@@ -13,7 +13,7 @@
  * more details.
  */
 
-#include "../pmemcheck.h"
+#include "../../pmemcheck.h"
 #include <stdlib.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -23,11 +23,11 @@
 
 int main ( void )
 {
-    static char file_path[] = "./pmemcheck.testfile";
+    static char file_path[] = "/tmp/pmemcheck.testfile";
 
     int fd;
     if ((fd = open(file_path, O_CREAT | O_RDWR)) < 0) {
-        return NULL;
+        return 1;
     }
     int size = 2048;
     if ((errno = posix_fallocate(fd, 0, size)) != 0) {
@@ -38,18 +38,8 @@ int main ( void )
         return 1;
     }
 
-    void *base;
-    if ((base = mmap(NULL, size, PROT_WRITE, MAP_PRIVATE|MAP_NORESERVE, fd,
-            0)) == MAP_FAILED) {
-        int oerrno = errno;
-        if (fd != -1)
-            close(fd);
-        errno = oerrno;
-        return 1;
-    }
-
-    VALGRIND_PMC_REGISTER_PMEM_MAPPING(fd, base, size);
-
+    VALGRIND_PMC_REGISTER_PMEM_MAPPING(100, size);
+    VALGRIND_PMC_REGISTER_PMEM_FILE(fd, 100, size, 0);
     unlink(file_path);
     close(fd);
 

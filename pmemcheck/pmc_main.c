@@ -36,10 +36,10 @@
 #include "pmemcheck.h"
 
 /* track at max this many multiple overwrites */
-#define MAX_MULT_OVERWRITES 1000000UL
+#define MAX_MULT_OVERWRITES 10000UL
 
 /* track at max this many flush error events */
-#define MAX_FLUSH_ERROR_EVENTS 1000000UL
+#define MAX_FLUSH_ERROR_EVENTS 10000UL
 
 /* build various kinds of expressions */
 #define triop(_op, _arg1, _arg2, _arg3) \
@@ -55,6 +55,8 @@
 
 /** Max store size*/
 #define MAX_DSIZE    256
+
+#define MAX_PATH_SIZE 4096
 
 /** Single store to memory. */
 struct pmem_st {
@@ -323,7 +325,7 @@ trace_pmem_store(Addr addr, SizeT size, UWord value)
     /* log the store, regardless if it is a double store */
     if (pmem.log_stores && ( pmem.loggin_on || VG_(OSetGen_Contains)
             (pmem.loggable_regions, store)))
-        VG_(emit)("|STORE;0x%lx;%lx;%lu", addr, value, size);
+        VG_(emit)("|STORE;0x%lx;0x%lx;0x%lx", addr, value, size);
 
     struct pmem_st *existing;
     while ((existing = VG_(OSetGen_Lookup)(pmem.pmem_stores, store)) !=
@@ -726,7 +728,7 @@ do_flush(UWord base, UWord size)
 
     if (pmem.log_stores && (pmem.loggin_on
             || (VG_(OSetGen_Size)(pmem.loggable_regions) != 0)))
-        VG_(emit)("|FLUSH;0x%lx;%llu", flush_info.addr, flush_info.size);
+        VG_(emit)("|FLUSH;0x%lx;0x%llx", flush_info.addr, flush_info.size);
 
     /* unfortunately lookup doesn't work here, the oset is an avl tree */
 
@@ -741,14 +743,14 @@ do_flush(UWord base, UWord size)
            continue;
        }
 
-        /* flushing a non-dirty store,  */
-        if (being_flushed->state != STST_DIRTY) {
+        /* flushing a non-dirty store */
+       if (being_flushed->state != STST_DIRTY) {
            /* flushing non dirty store - probably an issue, record */
            pmem.flush_errors[pmem.flush_errors_reg] = VG_(malloc)("pmc.main"
                    ".cpci.2", sizeof (struct pmem_st));
            *(pmem.flush_errors[pmem.flush_errors_reg]) = *being_flushed;
-            continue;
-        }
+           continue;
+       }
 
        being_flushed->state = STST_FLUSHED;
 
@@ -848,26 +850,34 @@ read_cache_line_size(void)
 
 /**
 * \brief Tries to register a file mapping.
-* \return Returns -1 on errors, 0  otherwise.
+* \param[in] fd The file descriptor to be registered.
+* \param[in] addr The address at which this file will be mapped.
+* \param[in] size The size of the registered file mapping.
+* \return Returns 0 on success, 1 otherwise.
 */
-static Int
-register_new_file(Int fd, UWord addr, UWord size)
+static UInt
+register_new_file(Int fd, UWord base, UWord size, UWord offset)
 {
-    char fd_path[128];
+    char fd_path[64];
     VG_(sprintf(fd_path, "/proc/self/fd/%d", fd));
+    UInt retval = 0;
 
-    int buf_size = 512;
-    char file_name[buf_size];
-    int read_length = VG_(readlink)(fd_path, file_name, buf_size);
-    if (read_length <= 0)
-        return -1;
+    char *file_name = VG_(malloc)("pmc.main.nfcc", MAX_PATH_SIZE);
+    int read_length = VG_(readlink)(fd_path, file_name, MAX_PATH_SIZE - 1);
+    if (read_length <= 0) {
+        retval = 1;
+        goto out;
+    }
 
     file_name[read_length] = 0;
 
     /* logging_on shall have no effect on this */
     if (pmem.log_stores)
-        VG_(emit)("|REGISTER_FILE;%s;0x%lx;%llu", file_name, addr, size);
-    return 0;
+        VG_(emit)("|REGISTER_FILE;%s;0x%lx;0x%lx;0x%lx", file_name, base,
+                size, offset);
+out:
+    VG_(free)(file_name);
+    return retval;
 }
 
 
@@ -1224,6 +1234,7 @@ pmc_handle_client_request(ThreadId tid, UWord *arg, UWord *ret )
 {
     if (!VG_IS_TOOL_USERREQ('P', 'C', arg[0])
             && VG_USERREQ__PMC_REGISTER_PMEM_MAPPING != arg[0]
+            && VG_USERREQ__PMC_REGISTER_PMEM_FILE != arg[0]
             && VG_USERREQ__PMC_REMOVE_PMEM_MAPPING != arg[0]
             && VG_USERREQ__PMC_CHECK_IS_PMEM_MAPPING != arg[0]
             && VG_USERREQ__PMC_DO_FLUSH != arg[0]
@@ -1231,17 +1242,25 @@ pmc_handle_client_request(ThreadId tid, UWord *arg, UWord *ret )
             && VG_USERREQ__PMC_DO_COMMIT != arg[0]
             && VG_USERREQ__PMC_WRITE_STATS != arg[0]
             && VG_USERREQ__GDB_MONITOR_COMMAND != arg[0]
+            && VG_USERREQ__PMC_PRINT_PMEM_MAPPINGS != arg[0]
+            && VG_USERREQ__PMC_LOG_STORES != arg[0]
+            && VG_USERREQ__PMC_NO_LOG_STORES != arg[0]
+            && VG_USERREQ__PMC_ADD_LOG_REGION != arg[0]
+            && VG_USERREQ__PMC_REMOVE_LOG_REGION != arg[0]
+            && VG_USERREQ__PMC_FULL_REORDED != arg[0]
+            && VG_USERREQ__PMC_PARTIAL_REORDER != arg[0]
+            && VG_USERREQ__PMC_ONLY_FAULT != arg[0]
+            && VG_USERREQ__PMC_STOP_REORDER_FAULT != arg[0]
             )
         return False;
 
     switch (arg[0]) {
         case VG_USERREQ__PMC_REGISTER_PMEM_MAPPING: {
             struct pmem_st temp_info;
-            temp_info.addr = arg[2];
-            temp_info.size = arg[3];
+            temp_info.addr = arg[1];
+            temp_info.size = arg[2];
 
             add_region(&temp_info, pmem.pmem_mappings);
-            register_new_file(arg[1], arg[2], arg[3]);
             *ret = 1;
             break;
         }
@@ -1254,6 +1273,15 @@ pmc_handle_client_request(ThreadId tid, UWord *arg, UWord *ret )
             remove_region(&temp_info, pmem.pmem_mappings);
             *ret = 1;
             break;
+        }
+
+        case VG_USERREQ__PMC_REGISTER_PMEM_FILE: {
+
+
+            if (arg[1] > 0) {
+                *ret = register_new_file(arg[1], arg[2], arg[3], arg[4]);
+            } else
+         break;
         }
 
         case VG_USERREQ__PMC_CHECK_IS_PMEM_MAPPING: {
@@ -1370,7 +1398,7 @@ pmc_handle_client_request(ThreadId tid, UWord *arg, UWord *ret )
         default:
             VG_(message)(
                     Vg_UserMsg,
-                    "Warning: unknown pmemcheck client request code %llx\n",
+                    "Warning: unknown pmemcheck client request code 0x%llx\n",
                     (ULong)arg[0]
             );
             return False;
