@@ -30,6 +30,7 @@
 #include "pub_tool_libcassert.h"
 #include "pub_tool_libcprint.h"
 #include "pub_tool_machine.h"
+#include "pub_tool_debuginfo.h"
 
 #include "pmemcheck.h"
 #include "pmc_include.h"
@@ -114,6 +115,12 @@ static struct pmem_ops {
 
     /** Toggles transaction tracking. */
     Bool transactions_only;
+
+    /** Toggles store stacktrace logging. */
+    Bool store_traces;
+
+    /** Depth of the printed store stacktrace. */
+    UInt store_traces_depth;
 } pmem;
 
 /*
@@ -340,6 +347,48 @@ print_redundant_flush_error(UWord limit)
     print_redundant_flushes();
 }
 
+static void
+printStoreIpDesc(UInt n, Addr ip, void *uu_opaque)
+{
+   #define BUF_LEN   4096
+
+   static HChar buf[BUF_LEN];
+
+   InlIPCursor *iipc = VG_(new_IIPC)(ip);
+
+   VG_(emit)(";");
+
+   do {
+      VG_(describe_IP)(ip, buf, BUF_LEN, iipc);
+      if (VG_(clo_xml)) {
+         VG_(printf_xml)("%s\n", buf);
+      } else {
+         VG_(emit)("%s", buf);
+      }
+      n++;
+      // Increase n to show "at" for only one level.
+   } while (VG_(next_IIPC)(iipc));
+   VG_(delete_IIPC)(iipc);
+}
+
+static void
+pp_store_trace(const struct pmem_st *store, UInt n_ips)
+{
+    n_ips = n_ips == 0 ? VG_(get_ExeContext_n_ips)(store->context) : n_ips;
+
+    tl_assert( n_ips > 0 );
+
+    if (VG_(clo_xml)) {
+         VG_(printf_xml)("    <stack>\n");
+    }
+
+    VG_(apply_ExeContext)(printStoreIpDesc, store->context, n_ips);
+
+    if (VG_(clo_xml)) {
+         VG_(printf_xml)("    </stack>\n");
+    }
+}
+
 /**
 * \brief Trace the given store if it was to any of the registered persistent
 *        memory regions
@@ -364,8 +413,11 @@ trace_pmem_store(Addr addr, SizeT size, UWord value)
 
     /* log the store, regardless if it is a double store */
     if (pmem.log_stores && ( pmem.loggin_on || VG_(OSetGen_Contains)
-            (pmem.loggable_regions, store)))
+            (pmem.loggable_regions, store))) {
         VG_(emit)("|STORE;0x%lx;0x%lx;0x%lx", addr, value, size);
+        if (pmem.store_traces)
+            pp_store_trace(store, pmem.store_traces_depth);
+    }
 
     struct pmem_st *existing;
     while ((existing = VG_(OSetGen_Lookup)(pmem.pmem_stores, store)) !=
@@ -1499,7 +1551,9 @@ pmc_process_cmd_line_option(const HChar *arg)
     else if VG_BOOL_CLO(arg, "--print-summary", pmem.print_summary) {}
     else if VG_BOOL_CLO(arg, "--flush-check", pmem.check_flush) {}
     else if VG_BOOL_CLO(arg, "--flush-align", pmem.force_flush_align) {}
-    else if VG_BOOL_CLO(arg, "--tx_only", pmem.transactions_only) {}
+    else if VG_BOOL_CLO(arg, "--tx-only", pmem.transactions_only) {}
+    else if VG_BOOL_CLO(arg, "--store-trace", pmem.store_traces) {}
+    else if VG_BINT_CLO(arg, "--store-trace-depth", pmem.store_traces_depth, 1, UINT_MAX) {}
     else
         return False;
 
@@ -1558,8 +1612,12 @@ pmc_print_usage(void)
             "                               default [no]\n"
             "    --flush-align=<yes|no>     force flush alignment to native cache\n"
             "                               line size default [no]\n"
-            "    --tx_only=<yes|no>         turn on transaction only memory\n"
+            "    --tx-only=<yes|no>         turn on transaction only memory\n"
             "                               modifications default [no]\n"
+            "    --store-trace=<yes|no>     add store stacktraces in log-stores\n"
+            "                               mode default [no]\n"
+            "    --store-trace-depth=<uint> set store stacktrace depth\n"
+            "                               in log-stores mode default [1]\n"
     );
 }
 
@@ -1616,6 +1674,7 @@ pmc_pre_clo_init(void)
     tl_assert(sizeof(Word) == 8);
 
     pmem.print_summary = True;
+    pmem.store_traces_depth = 1;
 }
 
 VG_DETERMINE_INTERFACE_VERSION(pmc_pre_clo_init)
