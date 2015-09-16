@@ -1516,6 +1516,8 @@ void ppIRMBusEvent ( IRMBusEvent event )
          vex_printf("Fence"); break;
       case Imbe_CancelReservation:
          vex_printf("CancelReservation"); break;
+      case Imbe_Drain:
+         vex_printf("Drain"); break;
       default:
          vpanic("ppIRMBusEvent");
    }
@@ -1602,6 +1604,11 @@ void ppIRStmt ( IRStmt* s )
          vex_printf("; exit-");
          ppIRJumpKind(s->Ist.Exit.jk);
          vex_printf(" } ");
+         break;
+      case Ist_Flush:
+         vex_printf( "FLUSH(");
+         ppIRExpr(s->Ist.Flush.addr);
+         vex_printf( ")");
          break;
       default: 
          vpanic("ppIRStmt");
@@ -2152,7 +2159,13 @@ IRStmt* IRStmt_Exit ( IRExpr* guard, IRJumpKind jk, IRConst* dst,
    s->Ist.Exit.offsIP = offsIP;
    return s;
 }
-
+IRStmt* IRStmt_Flush ( IRExpr* addr, Bool fenced ) {
+   IRStmt* s           = LibVEX_Alloc(sizeof(IRStmt));
+   s->tag              = Ist_Flush;
+   s->Ist.Flush.addr   = addr;
+   s->Ist.Flush.fenced = fenced;
+   return s;
+}
 
 /* Constructors -- IRTypeEnv */
 
@@ -2400,6 +2413,9 @@ IRStmt* deepCopyIRStmt ( IRStmt* s )
                             s->Ist.Exit.jk,
                             deepCopyIRConst(s->Ist.Exit.dst),
                             s->Ist.Exit.offsIP);
+      case Ist_Flush:
+         return IRStmt_Flush(deepCopyIRExpr(s->Ist.Flush.addr),
+                             s->Ist.Flush.fenced);
       default: 
          vpanic("deepCopyIRStmt");
    }
@@ -3684,6 +3700,8 @@ Bool isFlatIRStmt ( IRStmt* st )
          return True;
       case Ist_Exit:
          return isIRAtom(st->Ist.Exit.guard);
+      case Ist_Flush:
+         return toBool( isIRAtom(st->Ist.Flush.addr) );
       default: 
          vpanic("isFlatIRStmt(st)");
    }
@@ -3912,6 +3930,9 @@ void useBeforeDef_Stmt ( IRSB* bb, IRStmt* stmt, Int* def_counts )
          break;
       case Ist_Exit:
          useBeforeDef_Expr(bb,stmt,stmt->Ist.Exit.guard,def_counts);
+         break;
+      case Ist_Flush:
+         useBeforeDef_Expr(bb,stmt,stmt->Ist.Flush.addr,def_counts);
          break;
       default: 
          vpanic("useBeforeDef_Stmt");
@@ -4390,7 +4411,7 @@ void tcStmt ( IRSB* bb, IRStmt* stmt, IRType gWordTy )
          break;
       case Ist_MBE:
          switch (stmt->Ist.MBE.event) {
-            case Imbe_Fence: case Imbe_CancelReservation:
+            case Imbe_Fence: case Imbe_CancelReservation: case Imbe_Drain:
                break;
             default: sanityCheckFail(bb,stmt,"IRStmt.MBE.event: unknown");
                break;
@@ -4407,6 +4428,12 @@ void tcStmt ( IRSB* bb, IRStmt* stmt, IRType gWordTy )
          /* because it would intersect with host_EvC_* */
          if (stmt->Ist.Exit.offsIP < 16)
             sanityCheckFail(bb,stmt,"IRStmt.Exit.offsIP: too low");
+         break;
+      case Ist_Flush:
+         tcExpr( bb, stmt, stmt->Ist.Flush.addr, gWordTy );
+         if (typeOfIRExpr(tyenv, stmt->Ist.Flush.addr) != gWordTy)
+            sanityCheckFail(bb,stmt,
+                            "IRStmt.Flush.addr: not :: guest word type");
          break;
       default:
          vpanic("tcStmt");
