@@ -884,12 +884,12 @@ add_flush_dw(IRSB *sb, IRAtom *daddr)
     IRExpr **argv;
     IRDirty *di;
 
-	/* handle the normal case */
-	argv = mkIRExprVec_1(daddr);
-	di = unsafeIRDirty_0_N(/*regparms*/1, helperName,
-		VG_(fnptr_to_fnentry)(helperAddr), argv);
+    argv = mkIRExprVec_2(daddr,
+            IRExpr_Const(IRConst_U64(pmem.flush_align_size)));
+    di = unsafeIRDirty_0_N(/*regparms*/2, helperName,
+            VG_(fnptr_to_fnentry)(helperAddr), argv);
 
-        addStmtToIRSB(sb, IRStmt_Dirty(di));
+    addStmtToIRSB(sb, IRStmt_Dirty(di));
 }
 
 /**

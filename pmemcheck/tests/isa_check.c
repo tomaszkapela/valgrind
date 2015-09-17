@@ -39,7 +39,7 @@ int main ( void )
     _mm_sfence();
     /* flush should be registered as "invalid" */
     _mm_clflush(base);
-    //_mm_pcommit();
+    _mm_pcommit();
     /* flush should be registered as "invalid" */
     _mm_clflush(base);
     _mm_sfence();

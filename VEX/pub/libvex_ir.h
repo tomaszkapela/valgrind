@@ -2877,7 +2877,6 @@ typedef
          */
          struct {
             IRExpr*   addr;     /* flush address */
-            Bool      fenced;   /* no need to put memory barrier */
          } Flush;
        } Ist;
    }
@@ -2900,7 +2899,7 @@ extern IRStmt* IRStmt_LLSC    ( IREndness end, IRTemp result,
                                 IRExpr* addr, IRExpr* storedata );
 extern IRStmt* IRStmt_Dirty   ( IRDirty* details );
 extern IRStmt* IRStmt_MBE     ( IRMBusEvent event );
-extern IRStmt* IRStmt_Flush   ( IRExpr* addr, Bool fenced );
+extern IRStmt* IRStmt_Flush   ( IRExpr* addr );
 extern IRStmt* IRStmt_Exit    ( IRExpr* guard, IRJumpKind jk, IRConst* dst,
                                 Int offsIP );
 

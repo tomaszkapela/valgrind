@@ -13541,7 +13541,10 @@ Long dis_ESC_0F__SSE2 ( Bool* decode_OK,
          addr = disAMode ( &alen, vbi, pfx, delta, dis_buf, 0 );
          delta += alen;
 
-         stmt( IRStmt_Flush(mkexpr(addr), !have66(pfx)) );
+         stmt( IRStmt_Flush(mkexpr(addr)) );
+
+         if (!have66(pfx))
+             stmt( IRStmt_MBE(Imbe_Fence) );
 
          /* Round addr down to the start of the containing block. */
          stmt( IRStmt_Put(
@@ -13573,7 +13576,7 @@ Long dis_ESC_0F__SSE2 ( Bool* decode_OK,
          addr = disAMode ( &alen, vbi, pfx, delta, dis_buf, 0 );
          delta += alen;
 
-         stmt( IRStmt_Flush(mkexpr(addr), False) );
+         stmt( IRStmt_Flush(mkexpr(addr)) );
 
          /* Round addr down to the start of the containing block. */
          stmt( IRStmt_Put(

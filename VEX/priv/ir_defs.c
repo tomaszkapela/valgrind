@@ -2159,11 +2159,10 @@ IRStmt* IRStmt_Exit ( IRExpr* guard, IRJumpKind jk, IRConst* dst,
    s->Ist.Exit.offsIP = offsIP;
    return s;
 }
-IRStmt* IRStmt_Flush ( IRExpr* addr, Bool fenced ) {
+IRStmt* IRStmt_Flush ( IRExpr* addr ) {
    IRStmt* s           = LibVEX_Alloc(sizeof(IRStmt));
    s->tag              = Ist_Flush;
    s->Ist.Flush.addr   = addr;
-   s->Ist.Flush.fenced = fenced;
    return s;
 }
 
@@ -2414,9 +2413,8 @@ IRStmt* deepCopyIRStmt ( IRStmt* s )
                             deepCopyIRConst(s->Ist.Exit.dst),
                             s->Ist.Exit.offsIP);
       case Ist_Flush:
-         return IRStmt_Flush(deepCopyIRExpr(s->Ist.Flush.addr),
-                             s->Ist.Flush.fenced);
-      default: 
+         return IRStmt_Flush(deepCopyIRExpr(s->Ist.Flush.addr));
+      default:
          vpanic("deepCopyIRStmt");
    }
 }
@@ -3701,8 +3699,8 @@ Bool isFlatIRStmt ( IRStmt* st )
       case Ist_Exit:
          return isIRAtom(st->Ist.Exit.guard);
       case Ist_Flush:
-         return toBool( isIRAtom(st->Ist.Flush.addr) );
-      default: 
+         return isIRAtom(st->Ist.Flush.addr);
+      default:
          vpanic("isFlatIRStmt(st)");
    }
 }
