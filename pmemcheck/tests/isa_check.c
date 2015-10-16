@@ -32,7 +32,7 @@ int main ( void )
     void *base = make_map_tmpfile(FILE_SIZE);
 
     int64_t *i64p = base;
-
+VALGRIND_PMC_LOG_STORES;
     /* dirty stores */
     *i64p = 4;
     _mm_clflush(base);

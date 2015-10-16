@@ -762,7 +762,7 @@ do_commit(void)
 * \param[in] size The size of the flush in bytes.
 */
 static void
-do_flush(UWord base, UWord size)
+do_flush(UWord base, UWord size, HWord kind)
 {
     struct pmem_st flush_info = {0};
 
@@ -776,8 +776,16 @@ do_flush(UWord base, UWord size)
     }
 
     if (pmem.log_stores && (pmem.loggin_on
-            || (VG_(OSetGen_Size)(pmem.loggable_regions) != 0)))
-        VG_(emit)("|FLUSH;0x%lx;0x%llx", flush_info.addr, flush_info.size);
+            || (VG_(OSetGen_Size)(pmem.loggable_regions) != 0))) {
+        HChar *toWrite;
+        if (kind == Ifk_flushopt)
+            toWrite = "CLFLUSHOPT";
+        else if (kind == Ifk_clwb)
+            toWrite = "CLWB";
+        else
+            toWrite = "CLFLUSH";
+        VG_(emit)("|%s;0x%lx;0x%llx", toWrite, flush_info.addr, flush_info.size);
+    }
 
     /* unfortunately lookup doesn't work here, the oset is an avl tree */
 
@@ -868,11 +876,11 @@ do_flush(UWord base, UWord size)
  * \brief Register runtime flush.
  * \param addr[in] addr The expression with the address of the operation.
  */
-static VG_REGPARM(1) void
-trace_pmem_flush(Addr addr)
+static VG_REGPARM(2) void
+trace_pmem_flush(Addr addr, HWord kind)
 {
     /* use native cache size for flush */
-    do_flush(addr, pmem.flush_align_size);
+    do_flush(addr, pmem.flush_align_size, kind);
 }
 
 /**
@@ -881,7 +889,7 @@ trace_pmem_flush(Addr addr)
 * \param[in] daddr The expression with the address of the operation.
 */
 static void
-add_flush_event(IRSB *sb, IRAtom *daddr)
+add_flush_event(IRSB *sb, IRAtom *daddr, Int kind)
 {
     tl_assert(isIRAtom(daddr));
 
@@ -890,8 +898,8 @@ add_flush_event(IRSB *sb, IRAtom *daddr)
     IRExpr **argv;
     IRDirty *di;
 
-    argv = mkIRExprVec_1(daddr);
-    di = unsafeIRDirty_0_N(/*regparms*/1, helperName,
+    argv = mkIRExprVec_2(daddr, mkIRExpr_HWord(kind));
+    di = unsafeIRDirty_0_N(/*regparms*/2, helperName,
             VG_(fnptr_to_fnentry)(helperAddr), argv);
 
     addStmtToIRSB(sb, IRStmt_Dirty(di));
@@ -1164,7 +1172,7 @@ pmc_instrument(VgCallbackClosure *closure,
                     IRExpr *addr = st->Ist.Flush.addr;
                     IRType type = typeOfIRExpr(tyenv, addr);
                     tl_assert(type != Ity_INVALID);
-                    add_flush_event(sbOut, st->Ist.Flush.addr);
+                    add_flush_event(sbOut, st->Ist.Flush.addr, st->Ist.Flush.fk);
                     /* treat clflush as strong memory ordered */
                     if (st->Ist.Flush.fk == Ifk_flush)
                         add_simple_event(sbOut, do_fence, "do_fence");
@@ -1403,7 +1411,7 @@ pmc_handle_client_request(ThreadId tid, UWord *arg, UWord *ret )
         }
 
         case VG_USERREQ__PMC_DO_FLUSH: {
-            do_flush(arg[1], arg[2]);
+            do_flush(arg[1], arg[2], Ifk_flush);
             break;
         }
 

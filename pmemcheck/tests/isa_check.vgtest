@@ -1,2 +1,2 @@
 prog: isa_check
-vgopts: -q --flush-check=yes --flush-align=yes
+vgopts: -q --log-stores=yes --flush-check=yes --flush-align=yes
