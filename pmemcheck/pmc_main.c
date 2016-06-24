@@ -357,7 +357,7 @@ print_redundant_flush_error(UWord limit)
 static Bool
 is_ip_memset_memcpy(Addr ip)
 {
-    #define BUF_LEN   4096
+#define BUF_LEN   4096
 
     static HChar buf[BUF_LEN];
 
@@ -381,33 +381,34 @@ is_ip_memset_memcpy(Addr ip)
  * Return True if the ExeContexts are equal, not counting the first
  * memcpy/memset function, False otherwise.
  */
-static Bool cmp_exe_context(const ExeContext* lhs,const ExeContext* rhs) {
+static Bool
+cmp_exe_context(const ExeContext* lhs, const ExeContext* rhs)
+{
     if (lhs == NULL || rhs == NULL)
         return False;
 
     if (lhs == rhs)
         return True;
 
-    // retrieve stacktraces
+    /* retrieve stacktraces */
     UInt n_ips1;
     UInt n_ips2;
     const Addr *ips1 = VG_(make_StackTrace_from_ExeContext)(lhs, &n_ips1);
     const Addr *ips2 = VG_(make_StackTrace_from_ExeContext)(rhs, &n_ips2);
 
-    // Must be at least one address in each trace.
+    /* Must be at least one address in each trace. */
     tl_assert(n_ips1 >= 1 && n_ips2 >= 1);
 
-    // different stacktrace depth
+    /* different stacktrace depth */
     if (n_ips1 != n_ips2)
         return False;
 
-    // omit memcpy/memset at the top of the callstack
+    /* omit memcpy/memset at the top of the callstack */
     Int i = 0;
     if ((ips1[0] == ips2[0])
-            || (is_ip_memset_memcpy(ips1[0])
-                    && is_ip_memset_memcpy(ips2[0])))
+            || (is_ip_memset_memcpy(ips1[0]) && is_ip_memset_memcpy(ips2[0])))
         ++i;
-    // compare instruction pointers
+    /* compare instruction pointers */
     for (; i < n_ips1; i++)
         if (ips1[i] != ips2[i])
             return False;
@@ -425,8 +426,10 @@ static Bool cmp_exe_context(const ExeContext* lhs,const ExeContext* rhs) {
  *
  * \return True if stores are merge'able, False otherwise.
  */
-static Bool is_store_mergeable(const struct pmem_st *lhs,
-        const struct pmem_st *rhs) {
+static Bool
+is_store_mergeable(const struct pmem_st *lhs,
+        const struct pmem_st *rhs)
+{
     Bool context_eq = cmp_exe_context(lhs->context, rhs->context);
     return context_eq && lhs->state == rhs->state;
 }
@@ -439,12 +442,129 @@ static Bool is_store_mergeable(const struct pmem_st *lhs,
  * \param[in,out] to_merge the store with which the merge will happen.
  * \param[in] to_be_merged the store that will be merged.
  */
-static inline void merge_stores(struct pmem_st *to_merge,
-        const struct pmem_st *to_be_merged) {
+static inline void
+merge_stores(struct pmem_st *to_merge,
+        const struct pmem_st *to_be_merged)
+{
     ULong max_addr = MAX(to_merge->addr + to_merge->size,
             to_be_merged->addr + to_be_merged->size);
     to_merge->addr = MIN(to_merge->addr, to_be_merged->addr);
     to_merge->size = max_addr - to_merge->addr;
+}
+
+typedef void (*split_clb)(struct pmem_st *store,  OSet *set, Bool preallocated);
+
+/**
+ * \brief Free store if it was preallocated.
+ *
+ * \param[in,out] store The store to be freed.
+ * \param[in,out] set The set the store belongs to.
+ * \param[in] preallocated True if the store is in the heap and not the stack.
+ */
+static void
+free_clb(struct pmem_st *store,  OSet *set, Bool preallocated)
+{
+    if (preallocated)
+        VG_(OSetGen_FreeNode)(set, store);
+}
+
+/**
+ * \brief Issues a warning event with the given store as the offender.
+ *
+ * \param[in,out] store The store to be registered as a warning.
+ * \param[in,out] set The set the store belongs to.
+ * \param[in] preallocated True if the store is in the heap and not the stack.
+ */
+static void
+add_mult_overwrite_warn(struct pmem_st *store,  OSet *set, Bool preallocated)
+{
+    if (!preallocated) {
+        struct pmem_st *new = VG_(OSetGen_AllocNode)(set,
+                (SizeT) sizeof(struct pmem_st));
+        *new = *store;
+        store = new;
+    }
+
+    add_warning_event(pmem.multiple_stores, &pmem.multiple_stores_reg,
+            store, MAX_MULT_OVERWRITES, print_max_poss_overwrites_error);
+}
+
+/**
+ * \brief Splits-adjusts the two given stores so that they do not overlap.
+ *
+ * The stores need to be from the same set and have to overlap.
+ *
+ * \param[in,out] old The old store that will be modified.
+ * \param[in] new The new store that will not be modified.
+ * \param[in,out] set The set both of the stores belong to.
+ * \param[in,out] clb The callback to be called for the overlapping part of the
+ *  old store.
+ */
+static void
+split_stores(struct pmem_st *old, const struct pmem_st *new, OSet *set,
+        split_clb clb)
+{
+    Addr new_max = new->addr + new->size;
+    Addr old_max = old->addr + old->size;
+
+    /* new store encapsulates old, it needs to be removed */
+    if(old->addr >= new->addr && old_max <= new_max) {
+        VG_(OSetGen_Remove)(set, old);
+        clb(old, set, True);
+        return;
+    }
+
+    struct pmem_st tmp;
+    if (old->addr < new->addr) {
+        /* the new store is within the old store */
+        if (old_max > new_max) {
+            struct pmem_st *after = VG_(OSetGen_AllocNode)(set,
+                    (SizeT) sizeof(struct pmem_st));
+            *after = *old;
+            after->addr = new_max;
+            after->size = old_max - new_max;
+            after->value &= (1 << (after->size * 8 + 1)) - 1;
+            /* adjust the size and value of the old entry */
+            old->value >>= old_max - new->addr;
+            old->size = new->addr - old->addr;
+            /* insert the new store fragment */
+            VG_(OSetGen_Insert)(set, after);
+            /* clb the cut out fragment with the old ExeContext */
+            tmp = *new;
+            tmp.context = old->context;
+            clb(&tmp, set, False);
+        } else {
+            /* old starts before new */
+
+            /* callback for removed part */
+            tmp = *old;
+            tmp.addr = new->addr;
+            tmp.size = old_max - new->addr;
+            /* adjust leftover */
+            clb(&tmp, set, False);
+            old->value >>= old_max - new->addr;
+            old->size = new->addr - old->addr;
+        }
+        return;
+    }
+
+    /* now old->addr >= new->addr */
+
+    /* end of old is behind end of new */
+    if (old_max > new_max) {
+        /* callback for removed part */
+        tmp = *old;
+        tmp.size -= old_max - new_max;
+        clb(&tmp, set, False);
+        /* adjust leftover */
+        old->addr = new_max;
+        old->size = old_max - new_max;
+        old->value &= (1 << (old->size * 8 + 1)) - 1;
+        return;
+    }
+
+    /* you should never end up here */
+    tl_assert(False);
 }
 
 /**
@@ -453,24 +573,25 @@ static inline void merge_stores(struct pmem_st *to_merge,
  *
  * param[in,out] region the store to be added and merged with adjacent stores.
  */
-static void add_and_merge_store(struct pmem_st *region)
+static void
+add_and_merge_store(struct pmem_st *region)
 {
     struct pmem_st *old_entry;
-    // remove old overlapping entries
-    while((old_entry = VG_(OSetGen_Remove)(pmem.pmem_stores, region)) != NULL)
-        VG_(OSetGen_FreeNode)(pmem.pmem_stores, old_entry);
+    /* remove old overlapping entries */
+    while ((old_entry = VG_(OSetGen_Lookup)(pmem.pmem_stores, region)) != NULL)
+        split_stores(old_entry, region, pmem.pmem_stores, free_clb);
 
-    // check adjacent entries
+    /* check adjacent entries */
     struct pmem_st search_entry = *region;
     search_entry.addr -= 1;
     int i = 0;
-    for (i = 0; i < 1; ++i, search_entry.addr += 2) {
+    for (i = 0; i < 2; ++i, search_entry.addr += 2) {
         old_entry = VG_(OSetGen_Lookup)(pmem.pmem_stores, &search_entry);
-        // no adjacent entry
+        /* no adjacent entry */
         if (old_entry == NULL)
             continue;
-        // adjacent entry not merge'able
-        if(!is_store_mergeable(region, old_entry))
+        /* adjacent entry not merge'able */
+        if (!is_store_mergeable(region, old_entry))
             continue;
 
         /* registering overlapping stores, glue them together */
@@ -492,20 +613,19 @@ handle_with_mult_stores(struct pmem_st *store)
 {
     struct pmem_st *existing;
     // remove any overlapping stores from the collection
-    while ((existing = VG_(OSetGen_Remove)(pmem.pmem_stores, store)) !=
+    while ((existing = VG_(OSetGen_Lookup)(pmem.pmem_stores, store)) !=
     NULL) {
         /* check store indifference */
         if ((store->block_num - existing->block_num) < pmem.store_sb_indiff
                 && existing->addr == store->addr
                 && existing->size == store->size
                 && existing->value == store->value) {
+            VG_(OSetGen_Remove)(pmem.pmem_stores, store);
             VG_(OSetGen_FreeNode)(pmem.pmem_stores, existing);
             continue;
-        } else {
-            add_warning_event(pmem.multiple_stores, &pmem.multiple_stores_reg,
-                    existing, MAX_MULT_OVERWRITES,
-                    print_max_poss_overwrites_error);
         }
+        split_stores(existing, store, pmem.pmem_stores,
+                add_mult_overwrite_warn);
     }
     /* it is now safe to insert the new store */
     VG_(OSetGen_Insert)(pmem.pmem_stores, store);

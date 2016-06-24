@@ -34,16 +34,32 @@ static void fake_memset(void *dst, int c, size_t size)
         to[i] = c;
 }
 
+static void merge_memcpy(int8_t *start) {
+    *start = 1;
+    /* advance by two, to make a gap */
+    start += 2;
+    *start = 2;
+    /* fill the gap */
+    --start;
+    *start = 3;
+}
+
+static void overlap_test_memset(int16_t *first, int16_t *second)
+{
+    *first = 1;
+    *second = 2;
+}
+
 int main ( void )
 {
     /* make, map and register a temporary file */
     void *base = make_map_tmpfile(FILE_SIZE);
 
-    // will not merged
+    /* will not merged */
     int8_t *i8p = base;
     int16_t *i16p = (int16_t *)((uintptr_t)base + 1);
 
-    // will be merged
+    /* will be merged */
     int32_t *i32p = (int32_t *)((uintptr_t)base + 8);
     int64_t *i64p = (int64_t *)((uintptr_t)base + 64);
 
@@ -54,6 +70,14 @@ int main ( void )
     fake_memset(i32p, 1, 4 * sizeof(*i32p));
 
     fake_memcpy(i64p, i8p, 4 * sizeof(*i64p));
+
+    merge_memcpy(i8p + 512);
+
+    /* advance the pointer */
+    i16p += 512;
+    int16_t *i16p_ovelap = (int16_t *)((uintptr_t)i16p + 1);
+    overlap_test_memset(i16p, i16p_ovelap);
+    overlap_test_memset(i16p + 2, i16p_ovelap + 1);
 
     return 0;
 }
